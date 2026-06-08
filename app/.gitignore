@@ -1,5 +1,8 @@
 /build
 
+# Firebase config — contains the project's API key; provided per-developer.
+google-services.json
+
 # Prebuilt nodejs-mobile runtime — download from
 # https://github.com/nodejs-mobile/nodejs-mobile/releases and unzip into
 # app/libnode/ (see README / build.gradle.kts). Not tracked in git.

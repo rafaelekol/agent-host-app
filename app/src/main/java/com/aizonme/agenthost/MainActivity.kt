@@ -61,7 +61,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.startServiceButton).setOnClickListener {
-            // TODO: start the agent foreground service
+            AgentService.start(this)
         }
     }
 
