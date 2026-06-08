@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import java.io.File
 
 /**
  * Foreground service that keeps the embedded Node.js agent alive while a job is
@@ -30,6 +31,23 @@ class AgentService : Service() {
 
     private lateinit var nodeEngine: NodeEngineManager
     private var wakeLock: PowerManager.WakeLock? = null
+    private var engineStarted = false
+
+    /**
+     * Receives output from the Node runtime. A reply on stdout means the
+     * command was processed, so we drop the wake lock we were holding for it.
+     */
+    private val nodeCallback = object : NodeEngineManager.NodeOutputCallback {
+        override fun onStdout(line: String) {
+            Log.i(TAG, "node> $line")
+            // Node replied — release the lock acquired for this command.
+            releaseWakeLock()
+        }
+
+        override fun onStderr(line: String) {
+            Log.w(TAG, "node!> $line")
+        }
+    }
 
     companion object {
         private const val TAG = "AgentService"
@@ -38,22 +56,37 @@ class AgentService : Service() {
 
         const val ACTION_START = "com.aizonme.agenthost.action.START_AGENT"
         const val ACTION_STOP = "com.aizonme.agenthost.action.STOP_AGENT"
+        const val ACTION_RUN_COMMAND = "com.aizonme.agenthost.action.RUN_COMMAND"
 
         /** Carries the job payload (e.g. the command/prompt from the push message). */
         const val EXTRA_COMMAND = "com.aizonme.agenthost.extra.COMMAND"
+
+        /** Carries how long the wake lock should be held while the command runs. */
+        const val EXTRA_WAKE_LOCK_TIMEOUT_MS = "com.aizonme.agenthost.extra.WAKE_LOCK_TIMEOUT_MS"
 
         /** Default wake-lock ceiling; a job should outlive this only deliberately. */
         private const val DEFAULT_WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L // 10 min
 
         /**
-         * Starts the agent as a foreground service. Call when a job begins.
-         * [command] is the work to run (e.g. the prompt delivered by FCM); null
-         * for a manual/dev start with no job attached.
+         * Starts the agent as a foreground service with no job attached
+         * (manual/dev start, or restart after boot).
          */
-        fun start(context: Context, command: String? = null) {
+        fun start(context: Context) {
+            val intent = Intent(context, AgentService::class.java).setAction(ACTION_START)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Delivers a [command] to the agent. The service acquires a wake lock
+         * (bounded by [wakeLockTimeoutMs]), forwards the command to the Node
+         * runtime, and releases the lock once Node replies. This is the entry
+         * point used by [PushReceiver] when an FCM command arrives.
+         */
+        fun runCommand(context: Context, command: String, wakeLockTimeoutMs: Long) {
             val intent = Intent(context, AgentService::class.java)
-                .setAction(ACTION_START)
+                .setAction(ACTION_RUN_COMMAND)
                 .putExtra(EXTRA_COMMAND, command)
+                .putExtra(EXTRA_WAKE_LOCK_TIMEOUT_MS, wakeLockTimeoutMs)
             ContextCompat.startForegroundService(context, intent)
         }
 
@@ -75,27 +108,52 @@ class AgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // A null intent means START_STICKY re-delivered us after a process kill.
-        if (intent?.action == ACTION_STOP) {
-            Log.i(TAG, "Received STOP; shutting down")
-            stopAgent()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                Log.i(TAG, "Received STOP; shutting down")
+                stopAgent()
+                return START_NOT_STICKY
+            }
+
+            ACTION_RUN_COMMAND -> {
+                startForegroundWithNotification()
+                // Hold the CPU awake while Node processes this command. The lock
+                // is released later by nodeCallback when Node replies.
+                val timeout = intent.getLongExtra(
+                    EXTRA_WAKE_LOCK_TIMEOUT_MS,
+                    DEFAULT_WAKE_LOCK_TIMEOUT_MS
+                )
+                acquireWakeLock(timeout)
+
+                val command = intent.getStringExtra(EXTRA_COMMAND)
+                if (!command.isNullOrEmpty()) {
+                    ensureEngineStarted()
+                    Log.i(TAG, "Forwarding command to Node")
+                    nodeEngine.sendCommandToNode(command)
+                } else {
+                    Log.w(TAG, "RUN_COMMAND with no command payload")
+                }
+            }
+
+            else -> {
+                // Manual/dev start, or a null intent re-delivered by START_STICKY
+                // after a process kill. Go foreground with no job attached.
+                startForegroundWithNotification()
+            }
         }
 
-        startForegroundWithNotification()
-        // Keep the CPU awake while the job runs.
-        acquireWakeLock(DEFAULT_WAKE_LOCK_TIMEOUT_MS)
-
-        val command = intent?.getStringExtra(EXTRA_COMMAND)
-        Log.i(TAG, "Starting job (command=${command ?: "<none>"})")
-
-        // TODO: run the job on the Node runtime, e.g.
-        //   nodeEngine.start(scriptPath, callback)   // first job boots the runtime
-        //   command?.let { nodeEngine.sendCommandToNode(it) }
-        // and call AgentService.stop(this) once the job reports completion so
-        // the service does not linger while idle.
-
         return START_STICKY
+    }
+
+    /** Boots the Node runtime once, wiring its output to [nodeCallback]. */
+    private fun ensureEngineStarted() {
+        if (engineStarted) return
+        // Entry script the runtime executes. It is expected to read commands
+        // from process.stdin and write replies to stdout.
+        // TODO: extract this script from assets into filesDir on first run.
+        val scriptPath = File(filesDir, "nodejs-project/main.js").absolutePath
+        nodeEngine.start(scriptPath, nodeCallback)
+        engineStarted = true
     }
 
     override fun onDestroy() {

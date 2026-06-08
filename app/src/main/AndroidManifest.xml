@@ -36,7 +36,7 @@
             android:foregroundServiceType="dataSync" />
 
         <service
-            android:name=".AgentMessagingService"
+            android:name=".PushReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
