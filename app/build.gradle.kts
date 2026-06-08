@@ -18,6 +18,18 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // nodejs-mobile ships prebuilt libnode.so for these ABIs only.
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // libnode is built against the shared C++ STL.
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildTypes {
@@ -30,6 +42,24 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    // Builds the JNI bridge (native-lib) that links against libnode.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    // Packages the prebuilt libnode.so binaries from the nodejs-mobile bundle.
+    // Drop the downloaded bundle into app/libnode/ so that the layout is:
+    //   app/libnode/bin/<abi>/libnode.so
+    //   app/libnode/include/node/*.h
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libnode/bin")
+        }
     }
 }
 

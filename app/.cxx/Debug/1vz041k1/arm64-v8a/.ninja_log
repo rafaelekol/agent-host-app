@@ -1,0 +1,3 @@
+# ninja log v5
+0	730	1780913788134809767	CMakeFiles/native-lib.dir/native-lib.cpp.o	ae2b63b634bf8818
+731	842	1780913788249733835	/Users/rafael/Projects/agent-host-app/app/build/intermediates/cxx/Debug/1vz041k1/obj/arm64-v8a/libnative-lib.so	87e9975d9091b3e9
